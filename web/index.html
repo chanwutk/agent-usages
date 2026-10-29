@@ -7,15 +7,17 @@
 <style>
   header, #banner, main { width: min(1080px, calc(100% - 32px)); margin: 16px auto; }
   header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-  h1 { margin: 0; }
+  h1, h2 { margin: 0; }
+  h2 { margin-bottom: 12px; }
   #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
   .card { border: 1px solid gray; padding: 12px; display: flex; flex-direction: column; }
-  .foot { margin-top: auto; }
-  .window { margin: 0 0 12px; }
+  .foot { margin: auto 0 0; }
+  .window { margin: 20px 0; }
   .window-head { display: flex; justify-content: space-between; gap: 8px; }
   .track { position: relative; height: 10px; margin: 10px 0; background: lightgray; }
   .fill { height: 100%; background: green; }
   .fill.high { background: darkorange; }
+  .fill.full { background: red; }
   .pace {
     position: absolute;
     top: -6px;
@@ -47,14 +49,13 @@
   <div class="window">
   <div class="window-head">
     <span data-label></span>
-    <span data-percent></span>
+    <span data-reset></span>
   </div>
   <div class="track" data-bar role="progressbar" aria-valuemin="0" aria-valuemax="100">
   <div class="fill" data-fill></div>
   <div class="pace" data-pace hidden title="Time elapsed in this window"></div>
 </div>
 
-  <p class="reset" data-reset></p>
 </div>
 
 </template>
@@ -94,13 +95,14 @@ function fillWindow(node, win) {
   const label = (win.scope ? win.scope + " · " : "") + (KINDS[win.kind] || win.kind);
   const used = Math.max(0, Math.min(100, win.used_percent));
   node.querySelector("[data-label]").textContent = label;
-  node.querySelector("[data-percent]").textContent = win.used_percent + "%";
+  node.querySelector("[data-reset]").textContent = resetsIn(win.resets_at);
   const bar = node.querySelector("[data-bar]");
   bar.setAttribute("aria-valuenow", String(Math.round(used)));
   bar.setAttribute("aria-label", label);
   const fill = node.querySelector("[data-fill]");
   fill.style.width = used + "%";
   fill.classList.toggle("high", used >= 80);
+  fill.classList.toggle("full", used >= 100);
   const pace = node.querySelector("[data-pace]");
   const elapsed = timeElapsed(win);
   if (elapsed === null) pace.hidden = true;
@@ -108,7 +110,6 @@ function fillWindow(node, win) {
     pace.hidden = false;
     pace.style.left = elapsed + "%";
   }
-  node.querySelector("[data-reset]").textContent = resetsIn(win.resets_at);
 }
 
 function footer(provider) {

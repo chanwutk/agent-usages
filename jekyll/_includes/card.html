@@ -44,13 +44,14 @@ function fillWindow(node, win) {
   const label = (win.scope ? win.scope + " · " : "") + (KINDS[win.kind] || win.kind);
   const used = Math.max(0, Math.min(100, win.used_percent));
   node.querySelector("[data-label]").textContent = label;
-  node.querySelector("[data-percent]").textContent = win.used_percent + "%";
+  node.querySelector("[data-reset]").textContent = resetsIn(win.resets_at);
   const bar = node.querySelector("[data-bar]");
   bar.setAttribute("aria-valuenow", String(Math.round(used)));
   bar.setAttribute("aria-label", label);
   const fill = node.querySelector("[data-fill]");
   fill.style.width = used + "%";
   fill.classList.toggle("high", used >= 80);
+  fill.classList.toggle("full", used >= 100);
   const pace = node.querySelector("[data-pace]");
   const elapsed = timeElapsed(win);
   if (elapsed === null) pace.hidden = true;
@@ -58,7 +59,6 @@ function fillWindow(node, win) {
     pace.hidden = false;
     pace.style.left = elapsed + "%";
   }
-  node.querySelector("[data-reset]").textContent = resetsIn(win.resets_at);
 }
 
 function footer(provider) {

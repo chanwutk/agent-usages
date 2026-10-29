@@ -7,15 +7,17 @@
 <style>
   header, #banner, main { width: min(1080px, calc(100% - 32px)); margin: 16px auto; }
   header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-  h1 { margin: 0; }
+  h1, h2 { margin: 0; }
+  h2 { margin-bottom: 12px; }
   #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
   .card { border: 1px solid gray; padding: 12px; display: flex; flex-direction: column; }
-  .foot { margin-top: auto; }
-  .window { margin: 0 0 12px; }
+  .foot { margin: auto 0 0; }
+  .window { margin: 20px 0; }
   .window-head { display: flex; justify-content: space-between; gap: 8px; }
   .track { position: relative; height: 10px; margin: 10px 0; background: lightgray; }
   .fill { height: 100%; background: green; }
   .fill.high { background: darkorange; }
+  .fill.full { background: red; }
   .pace {
     position: absolute;
     top: -6px;
