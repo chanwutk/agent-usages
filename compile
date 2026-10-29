@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+cd "$(dirname "$0")"
+docker run --rm -v "$PWD/jekyll":/srv/jekyll jekyll/jekyll:4 jekyll build
+cp jekyll/_site/index.html web/index.html

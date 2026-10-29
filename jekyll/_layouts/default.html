@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ site.title }}</title>
+<style>
+  header, #banner, main { width: min(1080px, calc(100% - 32px)); margin: 16px auto; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  h1 { margin: 0; }
+  #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card { border: 1px solid gray; padding: 12px; display: flex; flex-direction: column; }
+  .foot { margin-top: auto; }
+  .window { margin: 0 0 12px; }
+  .window-head { display: flex; justify-content: space-between; gap: 8px; }
+  .track { position: relative; height: 10px; margin: 10px 0; background: lightgray; }
+  .fill { height: 100%; background: green; }
+  .fill.high { background: darkorange; }
+  .pace {
+    position: absolute;
+    top: -6px;
+    bottom: -6px;
+    width: 2px;
+    margin-left: -2px;
+    background: black;
+    border: 1px solid white;
+  }
+  .foot.bad, #banner { color: red; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ site.title }}</h1>
+  <button id="refresh" type="button">Refresh</button>
+</header>
+{{ content }}
+</body>
+</html>

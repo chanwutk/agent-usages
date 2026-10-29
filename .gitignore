@@ -2,3 +2,6 @@ usage.db
 usage.db-wal
 usage.db-shm
 __pycache__/
+jekyll/_site
+jekyll/.jekyll-cache
+jekyll/.jekyll-metadata

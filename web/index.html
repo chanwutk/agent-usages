@@ -23,7 +23,7 @@
     width: 2px;
     margin-left: -2px;
     background: black;
-    border: 1.5px solid white;
+    border: 1px solid white;
   }
   .foot.bad, #banner { color: red; }
 </style>
@@ -35,6 +35,29 @@
 </header>
 <p id="banner" hidden></p>
 <main id="cards"></main>
+<template id="card">
+  <section class="card">
+    <h2 data-name></h2>
+    <div data-windows></div>
+    <p class="foot" data-updated></p>
+
+  </section>
+</template>
+<template id="window">
+  <div class="window">
+  <div class="window-head">
+    <span data-label></span>
+    <span data-percent></span>
+  </div>
+  <div class="track" data-bar role="progressbar" aria-valuemin="0" aria-valuemax="100">
+  <div class="fill" data-fill></div>
+  <div class="pace" data-pace hidden title="Time elapsed in this window"></div>
+</div>
+
+  <p class="reset" data-reset></p>
+</div>
+
+</template>
 <script>
 const NAMES = { claude: "Claude", codex: "Codex", cursor: "Cursor" };
 const WINDOW_MS = { session: 5 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000 };
@@ -67,41 +90,25 @@ function resetsIn(iso) {
   return "resets in " + minutes + "m";
 }
 
-function windowEl(win) {
-  const wrap = document.createElement("div");
-  wrap.className = "window";
-  const head = document.createElement("div");
-  head.className = "window-head";
-  const title = document.createElement("span");
-  title.textContent = (win.scope ? win.scope + " · " : "") + (KINDS[win.kind] || win.kind);
-  const num = document.createElement("span");
-  num.textContent = win.used_percent + "%";
-  head.append(title, num);
-  const track = document.createElement("div");
-  track.className = "track";
+function fillWindow(node, win) {
+  const label = (win.scope ? win.scope + " · " : "") + (KINDS[win.kind] || win.kind);
   const used = Math.max(0, Math.min(100, win.used_percent));
-  track.setAttribute("role", "progressbar");
-  track.setAttribute("aria-valuemin", "0");
-  track.setAttribute("aria-valuemax", "100");
-  track.setAttribute("aria-valuenow", String(Math.round(used)));
-  track.setAttribute("aria-label", title.textContent);
-  const fill = document.createElement("div");
-  fill.className = "fill" + (used >= 80 ? " high" : "");
+  node.querySelector("[data-label]").textContent = label;
+  node.querySelector("[data-percent]").textContent = win.used_percent + "%";
+  const bar = node.querySelector("[data-bar]");
+  bar.setAttribute("aria-valuenow", String(Math.round(used)));
+  bar.setAttribute("aria-label", label);
+  const fill = node.querySelector("[data-fill]");
   fill.style.width = used + "%";
-  track.appendChild(fill);
+  fill.classList.toggle("high", used >= 80);
+  const pace = node.querySelector("[data-pace]");
   const elapsed = timeElapsed(win);
-  if (elapsed !== null) {
-    const pace = document.createElement("div");
-    pace.className = "pace";
+  if (elapsed === null) pace.hidden = true;
+  else {
+    pace.hidden = false;
     pace.style.left = elapsed + "%";
-    pace.title = "Time elapsed in this window";
-    track.appendChild(pace);
   }
-  const meta = document.createElement("p");
-  meta.className = "reset";
-  meta.textContent = resetsIn(win.resets_at);
-  wrap.append(head, track, meta);
-  return wrap;
+  node.querySelector("[data-reset]").textContent = resetsIn(win.resets_at);
 }
 
 function footer(provider) {
@@ -119,24 +126,26 @@ function footer(provider) {
 
 function render(data) {
   const root = document.getElementById("cards");
+  const cardTpl = document.getElementById("card");
+  const winTpl = document.getElementById("window");
   root.replaceChildren();
   data.providers.forEach(function (provider) {
-    const card = document.createElement("section");
-    card.className = "card";
-    const heading = document.createElement("h2");
-    heading.textContent = NAMES[provider.id] || provider.id;
-    card.appendChild(heading);
+    const card = cardTpl.content.firstElementChild.cloneNode(true);
+    card.querySelector("[data-name]").textContent = NAMES[provider.id] || provider.id;
+    const windows = card.querySelector("[data-windows]");
     if (!provider.windows.length && provider.ok !== false) {
       const empty = document.createElement("p");
-      empty.className = "empty";
       empty.textContent = "No samples yet";
-      card.appendChild(empty);
+      windows.appendChild(empty);
     }
-    provider.windows.forEach(function (win) { card.appendChild(windowEl(win)); });
-    const foot = document.createElement("p");
-    foot.className = "foot" + (provider.ok === false ? " bad" : "");
+    provider.windows.forEach(function (win) {
+      const node = winTpl.content.firstElementChild.cloneNode(true);
+      fillWindow(node, win);
+      windows.appendChild(node);
+    });
+    const foot = card.querySelector("[data-updated]");
+    foot.classList.toggle("bad", provider.ok === false);
     foot.textContent = footer(provider);
-    card.appendChild(foot);
     root.appendChild(card);
   });
 }
@@ -164,5 +173,7 @@ document.getElementById("refresh").addEventListener("click", function () { load(
 load(false);
 setInterval(function () { load(false); }, 15000);
 </script>
+
+
 </body>
 </html>
