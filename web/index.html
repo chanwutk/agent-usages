@@ -5,105 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent usage</title>
 <style>
-  :root {
-    color-scheme: light dark;
-    --bg: #f4f1ea;
-    --ink: #1c1915;
-    --card: #fffdf8;
-    --line: #e4ddd0;
-    --muted: #6d675e;
-    --fill: #2f6f4e;
-    --high: #a15c12;
-    --bad: #8d2f2f;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #171512;
-      --ink: #f3efe6;
-      --card: #221f1b;
-      --line: #3a342c;
-      --muted: #b7afa3;
-      --fill: #7dcea0;
-      --high: #e0a15a;
-      --bad: #f0a0a0;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font: 16px/1.4 ui-sans-serif, system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--ink);
-  }
-  header, main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; }
-  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px 20px; padding: 28px 0 8px; }
-  h1 { font-size: 1.4rem; margin: 0; }
-  #meta { margin: 0; color: var(--muted); flex: 1; }
-  button {
-    font: inherit;
-    background: var(--ink);
-    color: var(--bg);
-    border: 0;
-    border-radius: 999px;
-    padding: 8px 14px;
-    cursor: pointer;
-  }
-  button:disabled { opacity: 0.5; cursor: default; }
-  #banner { width: min(1080px, calc(100% - 32px)); margin: 8px auto 0; color: var(--bad); }
-  #cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 16px;
-    padding: 16px 0 40px;
-  }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    padding: 16px;
-  }
-  h2 { font-size: 1.05rem; margin: 0 0 12px; }
-  .window { margin: 0 0 14px; }
-  .window-head, .track { display: flex; }
-  .window-head { justify-content: space-between; gap: 8px; font-size: 0.92rem; }
-  .track {
-    position: relative;
-    height: 10px;
-    margin-top: 6px;
-    background: var(--line);
-    border-radius: 999px;
-    overflow: hidden;
-  }
-  .fill { height: 100%; background: var(--fill); width: 0; }
-  .fill.high { background: var(--high); }
+  header, #banner, main { width: min(1080px, calc(100% - 32px)); margin: 16px auto; }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  h1 { margin: 0; }
+  #cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card { border: 1px solid gray; padding: 12px; display: flex; flex-direction: column; }
+  .foot { margin-top: auto; }
+  .window { margin: 0 0 12px; }
+  .window-head { display: flex; justify-content: space-between; gap: 8px; }
+  .track { position: relative; height: 10px; margin: 10px 0; background: lightgray; }
+  .fill { height: 100%; background: green; }
+  .fill.high { background: darkorange; }
   .pace {
     position: absolute;
-    top: 0;
-    bottom: 0;
+    top: -6px;
+    bottom: -6px;
     width: 2px;
-    margin-left: -1px;
-    background: var(--ink);
-    pointer-events: none;
+    margin-left: -2px;
+    background: black;
+    border: 1.5px solid white;
   }
-  .reset, .foot, .empty { margin: 4px 0 0; color: var(--muted); font-size: 0.85rem; }
-  .foot.bad { color: var(--bad); }
-  .spark-box {
-    position: relative;
-    margin-top: 6px;
-    height: 40px;
-    border: 1px solid var(--line);
-    border-radius: 4px;
-  }
-  .spark { display: block; width: 100%; height: 100%; overflow: visible; }
-  .spark polyline { fill: none; stroke: var(--fill); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
-  .axis {
-    position: absolute;
-    right: 4px;
-    font-size: 10px;
-    line-height: 1;
-    color: var(--muted);
-    pointer-events: none;
-  }
+  .foot.bad, #banner { color: red; }
+  .spark-box { position: relative; height: 40px; margin-top: 4px; border: 1px solid gray; }
+  .spark { display: block; width: 100%; height: 100%; }
+  .spark polyline { fill: none; stroke: green; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+  .axis { position: absolute; right: 4px; font-size: 10px; }
   .axis.top { top: 2px; }
   .axis.bottom { bottom: 2px; }
 </style>
@@ -111,23 +37,27 @@
 <body>
 <header>
   <h1>Agent usage</h1>
-  <p id="meta">Loading…</p>
   <button id="refresh" type="button">Refresh</button>
 </header>
 <p id="banner" hidden></p>
 <main id="cards"></main>
 <script>
-const NAMES = { claude: "Claude", codex: "Codex", cursor: "Cursor", gemini: "Gemini" };
-const NOTES = { gemini: "Antigravity" };
+const NAMES = { claude: "Claude", codex: "Codex", cursor: "Cursor" };
 const WINDOW_MS = { session: 5 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000 };
 const KINDS = { session: "5-hour session", week: "This week", period: "Billing period" };
 
 function timeElapsed(win) {
-  const dur = WINDOW_MS[win.kind];
   const end = Date.parse(win.resets_at);
-  if (!dur || Number.isNaN(end)) return null;
-  const pct = ((Date.now() - (end - dur)) / dur) * 100;
-  return Math.max(0, Math.min(100, pct));
+  if (Number.isNaN(end)) return null;
+  let start = Date.parse(win.starts_at);
+  if (Number.isNaN(start)) {
+    const dur = WINDOW_MS[win.kind];
+    if (!dur) return null;
+    start = end - dur;
+  }
+  const span = end - start;
+  if (span <= 0) return null;
+  return Math.max(0, Math.min(100, ((Date.now() - start) / span) * 100));
 }
 
 function resetsIn(iso) {
@@ -227,9 +157,6 @@ function footer(provider) {
 }
 
 function render(data) {
-  document.getElementById("meta").textContent =
-    "Checks every " + (data.poll_seconds === 60 ? "minute" : (data.poll_seconds / 60) + " minutes") + ". Drops samples older than " +
-    data.keep_days + (data.keep_days === 1 ? " day" : " days") + ", every " + data.clean_hours + " hours.";
   const root = document.getElementById("cards");
   root.replaceChildren();
   data.providers.forEach(function (provider) {
@@ -238,12 +165,6 @@ function render(data) {
     const heading = document.createElement("h2");
     heading.textContent = NAMES[provider.id] || provider.id;
     card.appendChild(heading);
-    if (NOTES[provider.id]) {
-      const note = document.createElement("p");
-      note.className = "empty";
-      note.textContent = NOTES[provider.id];
-      card.appendChild(note);
-    }
     if (!provider.windows.length && provider.ok !== false) {
       const empty = document.createElement("p");
       empty.className = "empty";

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Poll Claude, Codex, Cursor, and Gemini quotas into sqlite and serve them."""
+"""Poll Claude, Codex, and Cursor quotas into sqlite and serve them."""
 
 import base64
 import json
@@ -24,13 +24,12 @@ KEEP_DAYS = 1
 CLEAN_HOURS = 6
 CLEAN_EVERY = timedelta(hours=CLEAN_HOURS)
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
-PROVIDERS = ("claude", "codex", "cursor", "gemini")
+PROVIDERS = ("claude", "codex", "cursor")
 KIND_ORDER = {"session": 0, "week": 1, "period": 2}
 HINT_401 = {
     "claude": "HTTP 401 — open Claude Code once",
     "codex": "HTTP 401 — run codex once",
     "cursor": "HTTP 401 — run agent login",
-    "gemini": "HTTP 401 — run agy once",
 }
 
 # ponytail: no oauth refresh. A 401 stays on the card until that CLI renews its token.
@@ -44,7 +43,8 @@ CREATE TABLE IF NOT EXISTS sample (
   kind TEXT NOT NULL,
   scope TEXT NOT NULL,
   used_percent REAL NOT NULL,
-  resets_at TEXT
+  resets_at TEXT,
+  starts_at TEXT
 );
 CREATE INDEX IF NOT EXISTS sample_lookup
   ON sample(provider, kind, scope, fetched_at);
@@ -91,12 +91,13 @@ def pct(value):
     return round(float(value), 2)
 
 
-def bar(kind, scope, used, resets):
+def bar(kind, scope, used, resets, starts=None):
     return {
         "kind": kind,
         "scope": scope or "",
         "used_percent": pct(used),
         "resets_at": norm_time(resets),
+        "starts_at": norm_time(starts),
     }
 
 
@@ -182,7 +183,8 @@ def parse_cursor(body):
     if total is None:
         return []
     resets = body.get("billingCycleEnd", body.get("billing_cycle_end"))
-    parsed = [bar("period", "", total, resets)]
+    starts = body.get("billingCycleStart", body.get("billing_cycle_start"))
+    parsed = [bar("period", "", total, resets, starts)]
     for scope, camel, snake in (
         ("auto", "autoPercentUsed", "auto_percent_used"),
         ("api", "apiPercentUsed", "api_percent_used"),
@@ -190,60 +192,8 @@ def parse_cursor(body):
         used = plan.get(camel, plan.get(snake))
         if used is None or abs(float(used) - float(total)) <= 0.05:
             continue
-        parsed.append(bar("period", scope, used, resets))
+        parsed.append(bar("period", scope, used, resets, starts))
     return parsed
-
-
-def _gemini_kind(bucket):
-    raw = bucket.get("window")
-    if not raw:
-        bid = str(bucket.get("bucketId") or "")
-        raw = bid.rsplit("-", 1)[-1] if "-" in bid else ""
-    key = str(raw).strip().lower()
-    if key in ("weekly", "week", "wk", "7d", "168h"):
-        return "week"
-    if key in ("5h", "five_hour", "five-hour", "5hour", "300m"):
-        return "session"
-    return None
-
-
-def _gemini_scope(bucket):
-    bid = str(bucket.get("bucketId") or "")
-    if bid in ("gemini-5h", "gemini-weekly"):
-        return ""
-    if bid.startswith("3p"):
-        return "Claude/GPT"
-    if bid.startswith("gemini-"):
-        return bucket.get("displayName") or bid
-    return bucket.get("displayName") or bid
-
-
-def parse_gemini(body):
-    parsed = []
-    groups = body.get("groups")
-    if not isinstance(groups, list):
-        return parsed
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        for bucket in group.get("buckets") or []:
-            if not isinstance(bucket, dict) or bucket.get("disabled") is True:
-                continue
-            kind = _gemini_kind(bucket)
-            fraction = bucket.get("remainingFraction")
-            if kind is None or fraction is None:
-                continue
-            used = (1 - float(fraction)) * 100
-            parsed.append(bar(kind, _gemini_scope(bucket), used, bucket.get("resetTime")))
-    return parsed
-
-
-PARSERS = {
-    "claude": parse_claude,
-    "codex": parse_codex,
-    "cursor": parse_cursor,
-    "gemini": parse_gemini,
-}
 
 
 def keychain(service, account=None):
@@ -311,24 +261,10 @@ def fetch_cursor():
     return parse_cursor(body)
 
 
-def fetch_gemini():
-    creds = keychain_json("gemini", "antigravity")
-    token = creds["token"]["access_token"]
-    project = (Path.home() / ".gemini/antigravity-cli/cache/default_project_id.txt").read_text().strip()
-    body = request_json(
-        "POST",
-        "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-        {"Authorization": f"Bearer {token}", "User-Agent": "antigravity"},
-        {"project": project},
-    )
-    return parse_gemini(body)
-
-
 FETCHERS = {
     "claude": fetch_claude,
     "codex": fetch_codex,
     "cursor": fetch_cursor,
-    "gemini": fetch_gemini,
 }
 
 
@@ -341,6 +277,9 @@ def connect():
 
 def init_db(con):
     con.executescript(SCHEMA)
+    cols = {row[1] for row in con.execute("PRAGMA table_info(sample)")}
+    if "starts_at" not in cols:
+        con.execute("ALTER TABLE sample ADD COLUMN starts_at TEXT")
 
 
 def cleanup(con, now=None):
@@ -395,8 +334,8 @@ def poll_once():
                         con.executemany(
                             """
                             INSERT INTO sample
-                              (fetched_at, provider, kind, scope, used_percent, resets_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
+                              (fetched_at, provider, kind, scope, used_percent, resets_at, starts_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                             """,
                             [
                                 (
@@ -406,6 +345,7 @@ def poll_once():
                                     w["scope"],
                                     w["used_percent"],
                                     w["resets_at"],
+                                    w["starts_at"],
                                 )
                                 for w in windows
                             ],
@@ -423,7 +363,7 @@ def usage_payload():
         try:
             rows = con.execute(
                 """
-                SELECT provider, kind, scope, used_percent, resets_at, fetched_at
+                SELECT provider, kind, scope, used_percent, resets_at, starts_at, fetched_at
                 FROM sample WHERE fetched_at >= ?
                 ORDER BY fetched_at ASC, id ASC
                 """,
@@ -460,6 +400,7 @@ def usage_payload():
                     "scope": scope,
                     "used_percent": row["used_percent"],
                     "resets_at": row["resets_at"],
+                    "starts_at": row["starts_at"],
                     "history": history,
                 }
             )
@@ -618,6 +559,7 @@ def check():
 
     cursor = parse_cursor(
         {
+            "billingCycleStart": "2026-10-18T06:32:13.504Z",
             "billingCycleEnd": "2026-11-01T00:00:00.000Z",
             "planUsage": {"totalPercentUsed": 10.19, "autoPercentUsed": 10.19, "apiPercentUsed": 3.16},
         }
@@ -626,40 +568,7 @@ def check():
         ("period", "", 10.19),
         ("period", "api", 3.16),
     ], cursor
-
-    gemini = parse_gemini(
-        {
-            "groups": [
-                {
-                    "displayName": "Gemini Models",
-                    "buckets": [
-                        {"bucketId": "gemini-weekly", "remainingFraction": 0.8, "resetTime": "2026-06-18T19:29:48Z"},
-                        {"bucketId": "gemini-5h", "remainingFraction": 0.5, "resetTime": "2026-06-17T05:29:48Z"},
-                        {
-                            "bucketId": "gemini-argon-wtu-weekly",
-                            "displayName": "Argon",
-                            "remainingFraction": 0.1,
-                            "resetTime": "2026-06-18T19:29:48Z",
-                            "disabled": True,
-                        },
-                    ],
-                },
-                {
-                    "displayName": "Claude and GPT models",
-                    "buckets": [
-                        {"bucketId": "3p-weekly", "remainingFraction": 0.25, "resetTime": "2026-06-18T19:29:48Z"},
-                        {"bucketId": "3p-5h", "remainingFraction": 1, "resetTime": "2026-06-17T05:29:48Z", "disabled": False},
-                    ],
-                },
-            ]
-        }
-    )
-    assert [(w["kind"], w["scope"], w["used_percent"]) for w in gemini] == [
-        ("week", "", 20.0),
-        ("session", "", 50.0),
-        ("week", "Claude/GPT", 75.0),
-        ("session", "Claude/GPT", 0.0),
-    ], gemini
+    assert {w["starts_at"] for w in cursor} == {"2026-10-18T06:32:13Z"}
 
     moment = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
     since = history_since("session", stamp(moment + timedelta(hours=1)), moment)
