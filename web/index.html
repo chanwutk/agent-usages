@@ -26,12 +26,6 @@
     border: 1.5px solid white;
   }
   .foot.bad, #banner { color: red; }
-  .spark-box { position: relative; height: 40px; margin-top: 4px; border: 1px solid gray; }
-  .spark { display: block; width: 100%; height: 100%; }
-  .spark polyline { fill: none; stroke: green; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
-  .axis { position: absolute; right: 4px; font-size: 10px; }
-  .axis.top { top: 2px; }
-  .axis.bottom { bottom: 2px; }
 </style>
 </head>
 <body>
@@ -73,36 +67,7 @@ function resetsIn(iso) {
   return "resets in " + minutes + "m";
 }
 
-function spark(history) {
-  if (!history || history.length < 2) return null;
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 100 100");
-  svg.setAttribute("preserveAspectRatio", "none");
-  svg.setAttribute("class", "spark");
-  svg.setAttribute("aria-hidden", "true");
-  const last = history.length - 1;
-  const points = history.map(function (point, i) {
-    const x = (i / last) * 100;
-    const used = Math.max(0, Math.min(100, point.p));
-    const y = 100 - used;
-    return x.toFixed(2) + "," + y.toFixed(2);
-  }).join(" ");
-  const line = document.createElementNS(svg.namespaceURI, "polyline");
-  line.setAttribute("points", points);
-  svg.appendChild(line);
-  const box = document.createElement("div");
-  box.className = "spark-box";
-  const top = document.createElement("span");
-  top.className = "axis top";
-  top.textContent = "100";
-  const bottom = document.createElement("span");
-  bottom.className = "axis bottom";
-  bottom.textContent = "0";
-  box.append(top, svg, bottom);
-  return box;
-}
-
-function windowEl(win, withSpark) {
+function windowEl(win) {
   const wrap = document.createElement("div");
   wrap.className = "window";
   const head = document.createElement("div");
@@ -136,10 +101,6 @@ function windowEl(win, withSpark) {
   meta.className = "reset";
   meta.textContent = resetsIn(win.resets_at);
   wrap.append(head, track, meta);
-  if (withSpark) {
-    const line = spark(win.history);
-    if (line) wrap.appendChild(line);
-  }
   return wrap;
 }
 
@@ -171,13 +132,7 @@ function render(data) {
       empty.textContent = "No samples yet";
       card.appendChild(empty);
     }
-    const mainKind = {};
-    provider.windows.forEach(function (win) {
-      if (win.scope === "") mainKind[win.kind] = true;
-    });
-    provider.windows.forEach(function (win) {
-      card.appendChild(windowEl(win, win.scope === "" || !mainKind[win.kind]));
-    });
+    provider.windows.forEach(function (win) { card.appendChild(windowEl(win)); });
     const foot = document.createElement("p");
     foot.className = "foot" + (provider.ok === false ? " bad" : "");
     foot.textContent = footer(provider);

@@ -7,10 +7,9 @@ import sqlite3
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,9 +19,6 @@ DB_PATH = ROOT / "usage.db"
 WEB = ROOT / "web"
 HOST, PORT = "127.0.0.1", 8787
 POLL_SECONDS = 60
-KEEP_DAYS = 1
-CLEAN_HOURS = 6
-CLEAN_EVERY = timedelta(hours=CLEAN_HOURS)
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 PROVIDERS = ("claude", "codex", "cursor")
 KIND_ORDER = {"session": 0, "week": 1, "period": 2}
@@ -33,7 +29,6 @@ HINT_401 = {
 }
 
 # ponytail: no oauth refresh. A 401 stays on the card until that CLI renews its token.
-# ponytail: cleanup deletes rows older than 1 day. Keep longer if a chart needs it.
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sample (
@@ -280,26 +275,34 @@ def init_db(con):
     cols = {row[1] for row in con.execute("PRAGMA table_info(sample)")}
     if "starts_at" not in cols:
         con.execute("ALTER TABLE sample ADD COLUMN starts_at TEXT")
+    drop_history(con)
 
 
-def cleanup(con, now=None):
-    now = now or now_utc()
-    cutoff = stamp(now - timedelta(days=KEEP_DAYS))
-    con.execute("DELETE FROM sample WHERE fetched_at < ?", (cutoff,))
-
-
-def history_since(kind, resets_at, now):
-    floor = now - timedelta(days=KEEP_DAYS)
-    start = floor
-    if resets_at:
-        reset = parse_stamp(resets_at)
-        if kind == "session":
-            start = reset - timedelta(hours=5)
-        elif kind == "week":
-            start = reset - timedelta(days=7)
-    if start < floor:
-        start = floor
-    return stamp(start)
+def drop_history(con, provider=None):
+    """Keep only the newest poll per provider. Older rows existed for the sparkline."""
+    if provider is None:
+        con.execute(
+            "DELETE FROM sample WHERE provider NOT IN (%s)" % ",".join("?" * len(PROVIDERS)),
+            PROVIDERS,
+        )
+        con.execute(
+            "DELETE FROM fetch_status WHERE provider NOT IN (%s)" % ",".join("?" * len(PROVIDERS)),
+            PROVIDERS,
+        )
+        where = ""
+        args = ()
+    else:
+        where = " AND provider = ?"
+        args = (provider,)
+    con.execute(
+        f"""
+        DELETE FROM sample
+        WHERE fetched_at < (
+          SELECT MAX(s2.fetched_at) FROM sample s2 WHERE s2.provider = sample.provider
+        ){where}
+        """,
+        args,
+    )
 
 
 def _status(con, provider, ok, message, fetched_at):
@@ -351,23 +354,22 @@ def poll_once():
                             ],
                         )
                         _status(con, provider, 1, "", fetched_at)
+                        drop_history(con, provider)
                     con.commit()
                 finally:
                     con.close()
 
 
 def usage_payload():
-    cutoff = stamp(now_utc() - timedelta(days=KEEP_DAYS))
     with db_lock:
         con = connect()
         try:
             rows = con.execute(
                 """
                 SELECT provider, kind, scope, used_percent, resets_at, starts_at, fetched_at
-                FROM sample WHERE fetched_at >= ?
-                ORDER BY fetched_at ASC, id ASC
-                """,
-                (cutoff,),
+                FROM sample
+                ORDER BY id ASC
+                """
             ).fetchall()
             status = {r["provider"]: r for r in con.execute("SELECT * FROM fetch_status")}
         finally:
@@ -375,35 +377,18 @@ def usage_payload():
     grouped = {provider: [] for provider in PROVIDERS}
     for row in rows:
         grouped.setdefault(row["provider"], []).append(row)
-    moment = now_utc()
     providers = []
     for provider in PROVIDERS:
-        items = grouped.get(provider, [])
-        current_at = items[-1]["fetched_at"] if items else None
-        current = [row for row in items if row["fetched_at"] == current_at]
-        windows = []
-        for row in current:
-            kind, scope = row["kind"], row["scope"]
-            since = history_since(kind, row["resets_at"], moment)
-            history = [
-                {"t": item["fetched_at"], "p": item["used_percent"]}
-                for item in items
-                if item["kind"] == kind and item["scope"] == scope and item["fetched_at"] >= since
-            ]
-            # fetched_at is stamped before the HTTP call, so the newest point can sit
-            # a few seconds before (resets_at - window).
-            if not history or history[-1]["t"] != row["fetched_at"]:
-                history.append({"t": row["fetched_at"], "p": row["used_percent"]})
-            windows.append(
-                {
-                    "kind": kind,
-                    "scope": scope,
-                    "used_percent": row["used_percent"],
-                    "resets_at": row["resets_at"],
-                    "starts_at": row["starts_at"],
-                    "history": history,
-                }
-            )
+        windows = [
+            {
+                "kind": row["kind"],
+                "scope": row["scope"],
+                "used_percent": row["used_percent"],
+                "resets_at": row["resets_at"],
+                "starts_at": row["starts_at"],
+            }
+            for row in grouped.get(provider, [])
+        ]
         windows.sort(key=lambda w: (KIND_ORDER.get(w["kind"], 9), w["scope"] != "", w["scope"]))
         st = status.get(provider)
         providers.append(
@@ -415,27 +400,11 @@ def usage_payload():
                 "windows": windows,
             }
         )
-    return {
-        "poll_seconds": POLL_SECONDS,
-        "keep_days": KEEP_DAYS,
-        "clean_hours": CLEAN_HOURS,
-        "providers": providers,
-    }
+    return {"poll_seconds": POLL_SECONDS, "providers": providers}
 
 
 def loop():
-    next_cleanup = now_utc()
     while not stop.is_set():
-        moment = now_utc()
-        if moment >= next_cleanup:
-            with db_lock:
-                con = connect()
-                try:
-                    cleanup(con, moment)
-                    con.commit()
-                finally:
-                    con.close()
-            next_cleanup = moment + CLEAN_EVERY
         try:
             poll_once()
         except Exception as e:
@@ -570,23 +539,20 @@ def check():
     ], cursor
     assert {w["starts_at"] for w in cursor} == {"2026-10-18T06:32:13Z"}
 
-    moment = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
-    since = history_since("session", stamp(moment + timedelta(hours=1)), moment)
-    assert since == stamp(moment - timedelta(hours=4)), since
-
     con = sqlite3.connect(":memory:")
     init_db(con)
-    fresh = stamp(moment)
-    stale = stamp(moment - timedelta(days=KEEP_DAYS, seconds=1))
-    kept = stamp(moment - timedelta(days=KEEP_DAYS))
-    for when, used in ((stale, 1), (kept, 2), (fresh, 3)):
+    for when, used in (("2026-10-29T11:00:00Z", 1), ("2026-10-29T12:00:00Z", 2)):
         con.execute(
             "INSERT INTO sample (fetched_at, provider, kind, scope, used_percent, resets_at) VALUES (?,?,?,?,?,?)",
             (when, "claude", "week", "", used, None),
         )
-    cleanup(con, moment)
-    left = [r[0] for r in con.execute("SELECT fetched_at FROM sample ORDER BY fetched_at")]
-    assert left == [kept, fresh], left
+    con.execute(
+        "INSERT INTO sample (fetched_at, provider, kind, scope, used_percent, resets_at) VALUES (?,?,?,?,?,?)",
+        ("2026-10-29T12:00:00Z", "gemini", "week", "", 9, None),
+    )
+    drop_history(con)
+    left = [(r[0], r[1]) for r in con.execute("SELECT provider, used_percent FROM sample ORDER BY provider")]
+    assert left == [("claude", 2)], left
     print("ok")
 
 
@@ -603,7 +569,7 @@ def main():
             con.close()
     threading.Thread(target=loop, daemon=True).start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"http://{HOST}:{PORT}  poll {POLL_SECONDS}s  cleanup hourly")
+    print(f"http://{HOST}:{PORT}  poll {POLL_SECONDS}s")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
