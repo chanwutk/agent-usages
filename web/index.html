@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent usage</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f1ea;
+    --ink: #1c1915;
+    --card: #fffdf8;
+    --line: #e4ddd0;
+    --muted: #6d675e;
+    --fill: #2f6f4e;
+    --high: #a15c12;
+    --bad: #8d2f2f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171512;
+      --ink: #f3efe6;
+      --card: #221f1b;
+      --line: #3a342c;
+      --muted: #b7afa3;
+      --fill: #7dcea0;
+      --high: #e0a15a;
+      --bad: #f0a0a0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 16px/1.4 ui-sans-serif, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  header, main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px 20px; padding: 28px 0 8px; }
+  h1 { font-size: 1.4rem; margin: 0; }
+  #meta { margin: 0; color: var(--muted); flex: 1; }
+  button {
+    font: inherit;
+    background: var(--ink);
+    color: var(--bg);
+    border: 0;
+    border-radius: 999px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #banner { width: min(1080px, calc(100% - 32px)); margin: 8px auto 0; color: var(--bad); }
+  #cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    padding: 16px 0 40px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  h2 { font-size: 1.05rem; margin: 0 0 12px; }
+  .window { margin: 0 0 14px; }
+  .window-head, .track { display: flex; }
+  .window-head { justify-content: space-between; gap: 8px; font-size: 0.92rem; }
+  .track {
+    position: relative;
+    height: 10px;
+    margin-top: 6px;
+    background: var(--line);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .fill { height: 100%; background: var(--fill); width: 0; }
+  .fill.high { background: var(--high); }
+  .pace {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--ink);
+    pointer-events: none;
+  }
+  .reset, .foot, .empty { margin: 4px 0 0; color: var(--muted); font-size: 0.85rem; }
+  .foot.bad { color: var(--bad); }
+  .spark-box {
+    position: relative;
+    margin-top: 6px;
+    height: 40px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  .spark { display: block; width: 100%; height: 100%; overflow: visible; }
+  .spark polyline { fill: none; stroke: var(--fill); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+  .axis {
+    position: absolute;
+    right: 4px;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--muted);
+    pointer-events: none;
+  }
+  .axis.top { top: 2px; }
+  .axis.bottom { bottom: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent usage</h1>
+  <p id="meta">Loading…</p>
+  <button id="refresh" type="button">Refresh</button>
+</header>
+<p id="banner" hidden></p>
+<main id="cards"></main>
+<script>
+const NAMES = { claude: "Claude", codex: "Codex", cursor: "Cursor", gemini: "Gemini" };
+const NOTES = { gemini: "Antigravity" };
+const WINDOW_MS = { session: 5 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000 };
+const KINDS = { session: "5-hour session", week: "This week", period: "Billing period" };
+
+function timeElapsed(win) {
+  const dur = WINDOW_MS[win.kind];
+  const end = Date.parse(win.resets_at);
+  if (!dur || Number.isNaN(end)) return null;
+  const pct = ((Date.now() - (end - dur)) / dur) * 100;
+  return Math.max(0, Math.min(100, pct));
+}
+
+function resetsIn(iso) {
+  const ms = Date.parse(iso) - Date.now();
+  if (!iso || Number.isNaN(ms)) return "N/A";
+  if (ms <= 0) return "resets in 0m";
+  const mins = Math.round(ms / 60000);
+  const days = Math.floor(mins / 1440);
+  const hours = Math.floor((mins % 1440) / 60);
+  const minutes = mins % 60;
+  if (days > 0) return "resets in " + days + "d " + hours + "h";
+  if (hours > 0) return "resets in " + hours + "h " + minutes + "m";
+  return "resets in " + minutes + "m";
+}
+
+function spark(history) {
+  if (!history || history.length < 2) return null;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("aria-hidden", "true");
+  const last = history.length - 1;
+  const points = history.map(function (point, i) {
+    const x = (i / last) * 100;
+    const used = Math.max(0, Math.min(100, point.p));
+    const y = 100 - used;
+    return x.toFixed(2) + "," + y.toFixed(2);
+  }).join(" ");
+  const line = document.createElementNS(svg.namespaceURI, "polyline");
+  line.setAttribute("points", points);
+  svg.appendChild(line);
+  const box = document.createElement("div");
+  box.className = "spark-box";
+  const top = document.createElement("span");
+  top.className = "axis top";
+  top.textContent = "100";
+  const bottom = document.createElement("span");
+  bottom.className = "axis bottom";
+  bottom.textContent = "0";
+  box.append(top, svg, bottom);
+  return box;
+}
+
+function windowEl(win, withSpark) {
+  const wrap = document.createElement("div");
+  wrap.className = "window";
+  const head = document.createElement("div");
+  head.className = "window-head";
+  const title = document.createElement("span");
+  title.textContent = (win.scope ? win.scope + " · " : "") + (KINDS[win.kind] || win.kind);
+  const num = document.createElement("span");
+  num.textContent = win.used_percent + "%";
+  head.append(title, num);
+  const track = document.createElement("div");
+  track.className = "track";
+  const used = Math.max(0, Math.min(100, win.used_percent));
+  track.setAttribute("role", "progressbar");
+  track.setAttribute("aria-valuemin", "0");
+  track.setAttribute("aria-valuemax", "100");
+  track.setAttribute("aria-valuenow", String(Math.round(used)));
+  track.setAttribute("aria-label", title.textContent);
+  const fill = document.createElement("div");
+  fill.className = "fill" + (used >= 80 ? " high" : "");
+  fill.style.width = used + "%";
+  track.appendChild(fill);
+  const elapsed = timeElapsed(win);
+  if (elapsed !== null) {
+    const pace = document.createElement("div");
+    pace.className = "pace";
+    pace.style.left = elapsed + "%";
+    pace.title = "Time elapsed in this window";
+    track.appendChild(pace);
+  }
+  const meta = document.createElement("p");
+  meta.className = "reset";
+  meta.textContent = resetsIn(win.resets_at);
+  wrap.append(head, track, meta);
+  if (withSpark) {
+    const line = spark(win.history);
+    if (line) wrap.appendChild(line);
+  }
+  return wrap;
+}
+
+function footer(provider) {
+  const when = provider.fetched_at
+    ? provider.fetched_at.replace("T", " ").replace("Z", " UTC")
+    : "";
+  if (provider.ok === false) {
+    return when && provider.windows.length
+      ? provider.message + " · last sample " + when
+      : (provider.message || "fetch failed");
+  }
+  if (!provider.fetched_at) return provider.message || "";
+  return "Updated " + when;
+}
+
+function render(data) {
+  document.getElementById("meta").textContent =
+    "Checks every " + (data.poll_seconds === 60 ? "minute" : (data.poll_seconds / 60) + " minutes") + ". Drops samples older than " +
+    data.keep_days + (data.keep_days === 1 ? " day" : " days") + ", every " + data.clean_hours + " hours.";
+  const root = document.getElementById("cards");
+  root.replaceChildren();
+  data.providers.forEach(function (provider) {
+    const card = document.createElement("section");
+    card.className = "card";
+    const heading = document.createElement("h2");
+    heading.textContent = NAMES[provider.id] || provider.id;
+    card.appendChild(heading);
+    if (NOTES[provider.id]) {
+      const note = document.createElement("p");
+      note.className = "empty";
+      note.textContent = NOTES[provider.id];
+      card.appendChild(note);
+    }
+    if (!provider.windows.length && provider.ok !== false) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No samples yet";
+      card.appendChild(empty);
+    }
+    const mainKind = {};
+    provider.windows.forEach(function (win) {
+      if (win.scope === "") mainKind[win.kind] = true;
+    });
+    provider.windows.forEach(function (win) {
+      card.appendChild(windowEl(win, win.scope === "" || !mainKind[win.kind]));
+    });
+    const foot = document.createElement("p");
+    foot.className = "foot" + (provider.ok === false ? " bad" : "");
+    foot.textContent = footer(provider);
+    card.appendChild(foot);
+    root.appendChild(card);
+  });
+}
+
+async function load(refresh) {
+  const button = document.getElementById("refresh");
+  const banner = document.getElementById("banner");
+  button.disabled = true;
+  try {
+    const res = await fetch(refresh ? "/api/refresh" : "/api/usage", {
+      method: refresh ? "POST" : "GET"
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    banner.hidden = true;
+    render(await res.json());
+  } catch (err) {
+    banner.hidden = false;
+    banner.textContent = "Could not load usage. " + err.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.getElementById("refresh").addEventListener("click", function () { load(true); });
+load(false);
+setInterval(function () { load(false); }, 15000);
+</script>
+</body>
+</html>

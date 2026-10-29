@@ -1,0 +1,4 @@
+usage.db
+usage.db-wal
+usage.db-shm
+__pycache__/
