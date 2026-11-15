@@ -172,6 +172,49 @@ def parse_codex(body):
     return parsed
 
 
+def _credit_num(value):
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def codex_credits(body):
+    """Spend-control balance. None when this account has no credit limit."""
+    pool = ((body.get("spend_control") or {}).get("individual_limit") or {})
+    credits = body.get("credits") or {}
+    if credits.get("unlimited"):
+        return {"remaining": None, "limit": None, "resets_at": None, "unlimited": True}
+    if pool.get("unit") == "credit" and _credit_num(pool.get("remaining")) is not None:
+        return {
+            "remaining": _credit_num(pool.get("remaining")),
+            "limit": _credit_num(pool.get("limit")),
+            "resets_at": norm_time(pool.get("reset_at")),
+            "unlimited": False,
+        }
+    if _credit_num(credits.get("balance")) is not None:
+        return {
+            "remaining": _credit_num(credits.get("balance")),
+            "limit": None,
+            "resets_at": None,
+            "unlimited": False,
+        }
+        return None
+
+
+def credit_period_start(resets_at):
+    """UTC calendar month ending at resets_at. None unless that instant is 00:00 on the 1st."""
+    if not resets_at:
+        return None
+    end = parse_stamp(resets_at)
+    if (end.day, end.hour, end.minute, end.second) != (1, 0, 0, 0):
+        return None
+    if end.month == 1:
+        start = end.replace(year=end.year - 1, month=12)
+    else:
+        start = end.replace(month=end.month - 1)
+    return stamp(start)
+
+
 def parse_cursor(body):
     plan = body.get("planUsage") or body.get("plan_usage") or {}
     total = plan.get("totalPercentUsed", plan.get("total_percent_used"))
@@ -229,7 +272,7 @@ def fetch_claude():
         "https://api.anthropic.com/api/oauth/usage",
         {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"},
     )
-    return parse_claude(body)
+    return parse_claude(body), None
 
 
 def fetch_codex():
@@ -242,7 +285,7 @@ def fetch_codex():
             "ChatGPT-Account-Id": tokens["account_id"],
         },
     )
-    return parse_codex(body)
+    return parse_codex(body), codex_credits(body)
 
 
 def fetch_cursor():
@@ -253,7 +296,7 @@ def fetch_cursor():
         {"Authorization": f"Bearer {token}", "Connect-Protocol-Version": "1"},
         {},
     )
-    return parse_cursor(body)
+    return parse_cursor(body), None
 
 
 FETCHERS = {
@@ -275,6 +318,15 @@ def init_db(con):
     cols = {row[1] for row in con.execute("PRAGMA table_info(sample)")}
     if "starts_at" not in cols:
         con.execute("ALTER TABLE sample ADD COLUMN starts_at TEXT")
+    status_cols = {row[1] for row in con.execute("PRAGMA table_info(fetch_status)")}
+    for name, decl in (
+        ("credits_remaining", "REAL"),
+        ("credits_limit", "REAL"),
+        ("credits_resets_at", "TEXT"),
+        ("credits_unlimited", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if name not in status_cols:
+            con.execute(f"ALTER TABLE fetch_status ADD COLUMN {name} {decl}")
     drop_history(con)
 
 
@@ -317,16 +369,33 @@ def _status(con, provider, ok, message, fetched_at):
     )
 
 
+def _credits(con, provider, credits):
+    con.execute(
+        """
+        UPDATE fetch_status
+        SET credits_remaining=?, credits_limit=?, credits_resets_at=?, credits_unlimited=?
+        WHERE provider=?
+        """,
+        (
+            None if credits is None else credits["remaining"],
+            None if credits is None else credits["limit"],
+            None if credits is None else credits["resets_at"],
+            0 if credits is None else int(credits["unlimited"]),
+            provider,
+        ),
+    )
+
+
 def poll_once():
     """Fetch outside the db lock so the page can read while a provider is in flight."""
     with poll_lock:
         fetched_at = stamp(now_utc())
         for provider in PROVIDERS:
             try:
-                windows = FETCHERS[provider]()
+                windows, credits = FETCHERS[provider]()
                 error = None if windows else "no quota windows in response"
             except Exception as e:
-                windows = None
+                windows, credits = None, None
                 error = HINT_401[provider] if str(e) == "HTTP 401" else str(e)
             with db_lock:
                 con = connect()
@@ -354,6 +423,7 @@ def poll_once():
                             ],
                         )
                         _status(con, provider, 1, "", fetched_at)
+                        _credits(con, provider, credits)
                         drop_history(con, provider)
                     con.commit()
                 finally:
@@ -391,6 +461,14 @@ def usage_payload():
         ]
         windows.sort(key=lambda w: (KIND_ORDER.get(w["kind"], 9), w["scope"] != "", w["scope"]))
         st = status.get(provider)
+        credits = None
+        if st is not None and (st["credits_unlimited"] or st["credits_remaining"] is not None):
+            credits = {
+                "remaining": st["credits_remaining"],
+                "limit": st["credits_limit"],
+                "resets_at": st["credits_resets_at"],
+                "unlimited": bool(st["credits_unlimited"]),
+            }
         providers.append(
             {
                 "id": provider,
@@ -398,6 +476,7 @@ def usage_payload():
                 "message": "checking…" if st is None else st["message"],
                 "fetched_at": None if st is None else st["fetched_at"],
                 "windows": windows,
+                "credits": credits,
             }
         )
     return {"poll_seconds": POLL_SECONDS, "providers": providers}
@@ -524,6 +603,25 @@ def check():
         ("session", "", 20.0),
         ("session", "Codex Spark", 4.0),
     ], codex
+    credits = codex_credits(
+        {
+            "spend_control": {
+                "individual_limit": {
+                    "unit": "credit",
+                    "limit": "5000",
+                    "remaining": "4547.2",
+                    "reset_at": 1784530149,
+                }
+            }
+        }
+    )
+    assert credits["remaining"] == 4547.2 and credits["limit"] == 5000.0
+    assert credits["resets_at"] == norm_time(1784530149)
+    assert credit_period_start("2026-11-01T00:00:00Z") == "2026-10-01T00:00:00Z"
+    assert credit_period_start("2026-01-01T00:00:00Z") == "2025-12-01T00:00:00Z"
+    assert credit_period_start("2026-11-01T12:00:00Z") is None
+    assert codex_credits({"credits": {"unlimited": True}})["unlimited"]
+    assert codex_credits({}) is None
 
     cursor = parse_cursor(
         {

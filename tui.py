@@ -80,6 +80,30 @@ def footer(provider):
     return f"Updated {when}"
 
 
+def credit_rows(provider, now, width):
+    credits = provider.get("credits")
+    if not credits:
+        return []
+    if credits["unlimited"]:
+        amount = "unlimited"
+    else:
+        remaining = f"{round(credits['remaining']):,}"
+        limit = credits["limit"]
+        amount = remaining if limit is None else f"{remaining} / {round(limit):,}"
+    reset = resets_in(credits["resets_at"], now) if credits["resets_at"] else ""
+    head = Table.grid(expand=True)
+    head.add_column(ratio=1)
+    head.add_column(justify="right")
+    head.add_row(f"Credits {amount}", reset)
+    rows = [head]
+    limit = credits["limit"]
+    if limit:
+        used = (limit - credits["remaining"]) / limit * 100
+        start = server.credit_period_start(credits["resets_at"])
+        rows.append(usage_bar(used, time_elapsed("period", credits["resets_at"], start, now), width))
+    return rows
+
+
 def provider_panel(provider, now, width):
     rows = []
     for window in provider["windows"]:
@@ -97,6 +121,7 @@ def provider_panel(provider, now, width):
                 width,
             )
         )
+    rows.extend(credit_rows(provider, now, width))
     if not provider["windows"] and provider["ok"] is not False:
         rows.append(Text("No samples yet"))
     foot = Text(footer(provider), style="red" if provider["ok"] is False else "dim")
